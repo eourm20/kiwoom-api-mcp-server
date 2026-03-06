@@ -1,0 +1,8 @@
+# Server runtime requirements
+mcp==1.26.0
+python-dotenv==1.0.1
+httpx==0.28.1
+pydantic==2.12.5
+pymupdf==1.26.5
+websocket-client==1.8.0
+tzdata==2025.2
