@@ -21,11 +21,6 @@
 - `kiwoom_catalog_recommend_for_question`
   - 질문 기반 후보 API 추천
 
-## 핵심 규칙
-
-- 카탈로그의 `문서 페이지`를 시작 페이지로 사용
-- 다음 API ID의 페이지 직전까지를 현재 API의 설명 구간으로 간주
-  - 예: 현재 7, 다음 9 => 현재 API 스펙 범위는 7~8
 
 ## 환경변수
 
@@ -35,9 +30,6 @@
 - `KIWOOM_API_PDF_PATH`
 - `KIWOOM_BASE_URL`, `KIWOOM_APP_KEY`, `KIWOOM_APP_SECRET`, ...
 
-기본 문서 위치(권장):
-- `docs/KIWOOM_REST_API_CATALOG.md`
-- `docs/키움 REST API 문서.pdf`
 
 ## 실행
 
