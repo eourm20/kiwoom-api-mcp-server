@@ -32,13 +32,14 @@
 | `kiwoom_catalog_recommend_for_question` | 질문 기반 후보 API 추천 |
 
 
-## 개인 KEY 필요
+## 환경 변수 설정
 
 `kiwoom_mcp/.env.example` 참고
 
 - `KIWOOM_APP_KEY`: 키움 OpenAPI 앱 키
 - `KIWOOM_APP_SECRET`: 앱 시크릿 키
 - `KIWOOM_ACCOUNT_NO`: 조회/주문 대상 계좌번호
+- `KIWOOM_BASE_URL`: 실전/모의투자 구분 url
 - `KIWOOM_ALLOW_TRADE_EXECUTION`: `true`일 때만 주문/정정/취소 API 실행 허용 (기본: `false`)
 - `KIWOOM_CATALOG_PATH`: API 카탈로그 문서 경로 (기본: `docs/KIWOOM_REST_API_CATALOG.md`)
 - `KIWOOM_API_PDF_PATH`: 키움 API PDF 문서 경로 (기본: `docs/키움 REST API 문서.pdf`)
@@ -78,20 +79,15 @@ Copy-Item kiwoom_mcp/.env.example kiwoom_mcp/.env
 - 필수값이 부족하면 `needs_input`으로 필요한 값과 옵션을 안내합니다.
 - 주문/정정/취소 API는 기본 차단입니다. 실행하려면 `KIWOOM_ALLOW_TRADE_EXECUTION=true`와 함께 `approve_trade=true`, `approval_note`를 모두 제공해야 합니다.
 
-## Smithery 등록
+## Smithery 사용 방법
 
-이 저장소에는 루트에 [`smithery.yaml`](c:\Users\eourm\Desktop\mcp-news-trade-coach\smithery.yaml)이 있어 `stdio` MCP로 실행하도록 설정했습니다.
+Smithery에서 이 서버를 설치한 뒤에도, 실제 키움 인증 정보는 사용자 머신의 로컬 `.env`에서 읽습니다. Smithery 설정 화면에는 앱 키, 시크릿, 계좌번호를 입력하지 않습니다.
 
-1. 저장소를 GitHub에 push
-2. Smithery에서 GitHub 저장소를 연결
-3. 서버 기본 디렉터리를 저장소 루트로 지정
-4. 배포 시 `smithery.yaml`의 `configSchema`에 맞춰 `kiwoomBaseUrl`, `kiwoomAppKey`, `kiwoomAppSecret`, `kiwoomAccountNo`를 입력
-5. 배포 후 Smithery inspect/run으로 `kiwoom_catalog_search` 같은 읽기 도구부터 검증
+1. Smithery에서 이 MCP 서버를 설치
+2. 사용자 머신에 `kiwoom_mcp/.env` 파일 생성
+3. [`kiwoom_mcp/.env.example`](c:\Users\eourm\Desktop\mcp-news-trade-coach\kiwoom_mcp\.env.example)을 참고해 `KIWOOM_BASE_URL`, `KIWOOM_APP_KEY`, `KIWOOM_APP_SECRET`, `KIWOOM_ACCOUNT_NO` 을 입력
+4. `KIWOOM_BASE_URL`은 실전/모의투자 환경에 맞게 사용자가 직접 선택
+5. 설치 후 `kiwoom_catalog_search` 또는 `내 예수금 조회해줘` 같은 읽기 요청으로 먼저 검증
 
-로컬에서 Smithery CLI 기준으로 확인할 때는 공식 CLI 문서 기준으로 `auth login`, `inspect`, `deploy` 흐름을 쓰면 됩니다.
-
-```powershell
-npx -y @smithery/cli@latest auth login
-npx -y @smithery/cli@latest inspect <your-server-id>
-npx -y @smithery/cli@latest deploy --name @<your-namespace>/kiwoom-mcp
-```
+주의:
+주문/정정/취소 API는 기본 차단입니다. 실제 실행하려면 `.env`에서 `KIWOOM_ALLOW_TRADE_EXECUTION=true`를 설정하고, 호출 시에도 `approve_trade=true`와 `approval_note`를 함께 제공해야 합니다.
