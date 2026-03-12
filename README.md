@@ -39,6 +39,7 @@
 - `KIWOOM_APP_KEY`: 키움 OpenAPI 앱 키
 - `KIWOOM_APP_SECRET`: 앱 시크릿 키
 - `KIWOOM_ACCOUNT_NO`: 조회/주문 대상 계좌번호
+- `KIWOOM_ALLOW_TRADE_EXECUTION`: `true`일 때만 주문/정정/취소 API 실행 허용 (기본: `false`)
 - `KIWOOM_CATALOG_PATH`: API 카탈로그 문서 경로 (기본: `docs/KIWOOM_REST_API_CATALOG.md`)
 - `KIWOOM_API_PDF_PATH`: 키움 API PDF 문서 경로 (기본: `docs/키움 REST API 문서.pdf`)
 

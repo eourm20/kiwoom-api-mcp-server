@@ -118,6 +118,59 @@ def _default_pdf_path() -> str:
     return ""
 
 
+def _is_truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _trade_execution_globally_allowed() -> bool:
+    return _is_truthy(os.getenv("KIWOOM_ALLOW_TRADE_EXECUTION", "false"))
+
+
+def _catalog_item_for_api(api_id: str) -> Any | None:
+    return find_by_code(_catalog_path(), api_id)
+
+
+def _is_trade_api(api_id: str) -> bool:
+    entry = _catalog_item_for_api(api_id)
+    if entry is None:
+        return False
+    minor = str(getattr(entry, "minor", "") or "")
+    name = str(getattr(entry, "name", "") or "")
+    trade_keywords = ("주문", "정정", "취소", "매수", "매도")
+    trade_categories = ("주문", "신용주문")
+    return minor in trade_categories or any(keyword in name for keyword in trade_keywords)
+
+
+def _trade_approval_response(
+    *,
+    api_id: str,
+    body: dict[str, Any] | None,
+    path: str,
+    approval_note: str,
+) -> dict[str, Any]:
+    entry = _catalog_item_for_api(api_id)
+    return {
+        "ok": False,
+        "mode": "approval_required",
+        "message": (
+            "Trade execution is blocked by default. "
+            "Set KIWOOM_ALLOW_TRADE_EXECUTION=true and call again with approve_trade=true."
+        ),
+        "api_id": api_id,
+        "catalog_item": _entry_to_dict(entry) if entry is not None else None,
+        "approval_requirements": {
+            "env_var": "KIWOOM_ALLOW_TRADE_EXECUTION=true",
+            "tool_argument": "approve_trade=true",
+            "approval_note_required": True,
+        },
+        "request_preview": {
+            "path": path,
+            "body": body or {},
+            "approval_note": approval_note,
+        },
+    }
+
+
 def _build_auto_body(
     *,
     question: str,
@@ -406,11 +459,22 @@ def kiwoom_execute_api(
     cont_yn: str = "N",
     next_key: str = "",
     max_pages: int = 1,
+    approve_trade: bool = False,
+    approval_note: str = "",
 ) -> dict[str, Any]:
     """
     Unified Kiwoom executor tool.
     Executes any Kiwoom API call with api_id + body, and returns raw payload pages.
     """
+    if _is_trade_api(api_id):
+        if not _trade_execution_globally_allowed() or not approve_trade or not approval_note.strip():
+            return _trade_approval_response(
+                api_id=api_id,
+                body=body,
+                path=path or os.getenv("KIWOOM_ACCOUNT_PATH", "/api/dostk/acnt"),
+                approval_note=approval_note,
+            )
+
     client = _build_client()
     try:
         result = client.execute_api(
@@ -638,6 +702,8 @@ def kiwoom_auto_call(
     pdf_path: str = "",
     max_pages: int = 1,
     dry_run: bool = False,
+    approve_trade: bool = False,
+    approval_note: str = "",
 ) -> dict[str, Any]:
     """
     Auto pipeline:
@@ -739,6 +805,15 @@ def kiwoom_auto_call(
             "option_selection_summary": _option_selection_summary(option_decisions),
         }
 
+    if _is_trade_api(chosen_api_id):
+        if not _trade_execution_globally_allowed() or not approve_trade or not approval_note.strip():
+            return _trade_approval_response(
+                api_id=chosen_api_id,
+                body=request_body,
+                path=url or os.getenv("KIWOOM_ACCOUNT_PATH", "/api/dostk/acnt"),
+                approval_note=approval_note,
+            )
+
     if use_realtime:
         execute_result = kiwoom_execute_realtime(
             api_id=chosen_api_id,
@@ -756,6 +831,8 @@ def kiwoom_auto_call(
             body=request_body,
             path=url,
             max_pages=max_pages,
+            approve_trade=approve_trade,
+            approval_note=approval_note,
         )
     return {
         "ok": True,
