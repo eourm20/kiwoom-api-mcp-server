@@ -47,7 +47,14 @@
 ## 실행
 
 ```powershell
+# stdio 기본 실행
 python -m kiwoom_mcp.server
+```
+
+`.env.example`을 복사해 `kiwoom_mcp/.env`를 만들 때, `MCP_TRANSPORT=stdio` 상태를 유지해야 Claude Desktop/Smithery `stdio` 실행과 맞습니다.
+
+```powershell
+Copy-Item kiwoom_mcp/.env.example kiwoom_mcp/.env
 ```
 
 ## MCP 사용 방법
@@ -69,3 +76,22 @@ python -m kiwoom_mcp.server
 
 - `종목/기간/구분(입금, 출금, 미체결)`을 같이 쓰면 매핑 정확도가 올라갑니다.
 - 필수값이 부족하면 `needs_input`으로 필요한 값과 옵션을 안내합니다.
+- 주문/정정/취소 API는 기본 차단입니다. 실행하려면 `KIWOOM_ALLOW_TRADE_EXECUTION=true`와 함께 `approve_trade=true`, `approval_note`를 모두 제공해야 합니다.
+
+## Smithery 등록
+
+이 저장소에는 루트에 [`smithery.yaml`](c:\Users\eourm\Desktop\mcp-news-trade-coach\smithery.yaml)이 있어 `stdio` MCP로 실행하도록 설정했습니다.
+
+1. 저장소를 GitHub에 push
+2. Smithery에서 GitHub 저장소를 연결
+3. 서버 기본 디렉터리를 저장소 루트로 지정
+4. 배포 시 `smithery.yaml`의 `configSchema`에 맞춰 `kiwoomBaseUrl`, `kiwoomAppKey`, `kiwoomAppSecret`, `kiwoomAccountNo`를 입력
+5. 배포 후 Smithery inspect/run으로 `kiwoom_catalog_search` 같은 읽기 도구부터 검증
+
+로컬에서 Smithery CLI 기준으로 확인할 때는 공식 CLI 문서 기준으로 `auth login`, `inspect`, `deploy` 흐름을 쓰면 됩니다.
+
+```powershell
+npx -y @smithery/cli@latest auth login
+npx -y @smithery/cli@latest inspect <your-server-id>
+npx -y @smithery/cli@latest deploy --name @<your-namespace>/kiwoom-mcp
+```

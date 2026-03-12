@@ -1,0 +1,109 @@
+# Smithery configuration file: https://smithery.ai/docs/build/project-config
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    required:
+      - kiwoomAppKey
+      - kiwoomAppSecret
+      - kiwoomAccountNo
+      - kiwoomBaseUrl
+    properties:
+      kiwoomAppKey:
+        type: string
+        description: Kiwoom OpenAPI app key
+      kiwoomAppSecret:
+        type: string
+        description: Kiwoom OpenAPI app secret
+      kiwoomAccountNo:
+        type: string
+        description: Kiwoom account number used for queries and orders
+      kiwoomAllowTradeExecution:
+        type: boolean
+        default: false
+        description: Enable order, amend, and cancel APIs. Per-call approval is still required.
+      kiwoomBaseUrl:
+        type: string
+        default: https://api.kiwoom.com
+        description: Kiwoom REST API base URL for live or mock investment
+      kiwoomTokenPath:
+        type: string
+        default: /oauth2/token
+        description: Token endpoint path
+      kiwoomAccountPath:
+        type: string
+        default: /api/dostk/acnt
+        description: Account REST path
+      kiwoomWsBaseUrl:
+        type: string
+        default: wss://api.kiwoom.com:10000
+        description: Kiwoom websocket base URL
+      kiwoomRealtimePath:
+        type: string
+        default: /api/dostk/websocket
+        description: Realtime websocket path
+      kiwoomDepositsApiId:
+        type: string
+        default: kt00015
+        description: Deposits API ID
+      kiwoomTradesApiId:
+        type: string
+        default: kt00015
+        description: Trades API ID
+      kiwoomAccountBalanceApiId:
+        type: string
+        default: kt00001
+        description: Account balance API ID
+      kiwoomDmstStexTp:
+        type: string
+        default: "%"
+        description: Domestic exchange type default
+      kiwoomGdsTp:
+        type: string
+        default: "1"
+        description: Goods type default
+      kiwoomCrncCd:
+        type: string
+        default: KRW
+        description: Currency code default
+      kiwoomCatalogPath:
+        type: string
+        default: docs/KIWOOM_REST_API_CATALOG.md
+        description: Relative path to the catalog markdown
+      kiwoomApiPdfPath:
+        type: string
+        default: docs/키움 REST API 문서.pdf
+        description: Relative path to the Kiwoom API PDF
+  commandFunction: |-
+    (config) => ({
+      command: 'python',
+      args: ['-m', 'kiwoom_mcp.server'],
+      env: {
+        MCP_TRANSPORT: 'stdio',
+        KIWOOM_BASE_URL: config.kiwoomBaseUrl || 'https://api.kiwoom.com',
+        KIWOOM_APP_KEY: config.kiwoomAppKey,
+        KIWOOM_APP_SECRET: config.kiwoomAppSecret,
+        KIWOOM_ACCOUNT_NO: config.kiwoomAccountNo,
+        KIWOOM_ALLOW_TRADE_EXECUTION: String(config.kiwoomAllowTradeExecution ?? false),
+        KIWOOM_TOKEN_PATH: config.kiwoomTokenPath || '/oauth2/token',
+        KIWOOM_ACCOUNT_PATH: config.kiwoomAccountPath || '/api/dostk/acnt',
+        KIWOOM_WS_BASE_URL: config.kiwoomWsBaseUrl || 'wss://api.kiwoom.com:10000',
+        KIWOOM_REALTIME_PATH: config.kiwoomRealtimePath || '/api/dostk/websocket',
+        KIWOOM_DEPOSITS_API_ID: config.kiwoomDepositsApiId || 'kt00015',
+        KIWOOM_TRADES_API_ID: config.kiwoomTradesApiId || 'kt00015',
+        KIWOOM_ACCOUNT_BALANCE_API_ID: config.kiwoomAccountBalanceApiId || 'kt00001',
+        KIWOOM_DMST_STEX_TP: config.kiwoomDmstStexTp || '%',
+        KIWOOM_GDS_TP: config.kiwoomGdsTp || '1',
+        KIWOOM_CRNC_CD: config.kiwoomCrncCd || 'KRW',
+        KIWOOM_CATALOG_PATH: config.kiwoomCatalogPath || 'docs/KIWOOM_REST_API_CATALOG.md',
+        KIWOOM_API_PDF_PATH: config.kiwoomApiPdfPath || 'docs/키움 REST API 문서.pdf'
+      }
+    })
+  exampleConfig:
+    kiwoomBaseUrl: https://api.kiwoom.com
+    kiwoomAllowTradeExecution: false
+    kiwoomAppKey: your_app_key
+    kiwoomAppSecret: your_app_secret
+    kiwoomAccountNo: your_account_no
+    kiwoomCatalogPath: docs/KIWOOM_REST_API_CATALOG.md
+    kiwoomApiPdfPath: docs/키움 REST API 문서.pdf
