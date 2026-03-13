@@ -64,13 +64,14 @@ pip install -r requirements.txt
 Copy-Item kiwoom_mcp\.env.example kiwoom_mcp\.env
 ```
 
-`kiwoom_mcp\.env`를 열어 아래 4개 항목을 본인 값으로 변경합니다.
+`kiwoom_mcp\.env`를 열어 아래 항목을 본인 값으로 변경합니다.
 
 ```env
 KIWOOM_BASE_URL=https://api.kiwoom.com        # 실전: https://api.kiwoom.com / 모의: https://mockapi.kiwoom.com
 KIWOOM_APP_KEY=your_app_key                   # 키움 OpenAPI 앱 키
 KIWOOM_APP_SECRET=your_app_secret             # 키움 OpenAPI 앱 시크릿
 KIWOOM_ACCOUNT_NO=your_account_no             # 조회/주문 대상 계좌번호
+KIWOOM_ALLOW_TRADE_EXECUTION=false            # 주문/정정/취소 허용 여부 (기본 false, 실거래 시 true로 변경)
 ```
 
 ### 3. Claude Desktop 등록
@@ -137,16 +138,3 @@ python -m kiwoom_mcp.server
 - `종목/기간/구분(입금, 출금, 미체결)`을 같이 쓰면 매핑 정확도가 올라갑니다.
 - 필수값이 부족하면 `needs_input`으로 필요한 값과 옵션을 안내합니다.
 - 주문/정정/취소 API는 기본 차단입니다. 실행하려면 `KIWOOM_ALLOW_TRADE_EXECUTION=true`와 함께 `approve_trade=true`, `approval_note`를 모두 제공해야 합니다.
-
-## Smithery 사용 방법
-
-Smithery에서 이 서버를 설치한 뒤에도, 실제 키움 인증 정보는 사용자 머신의 로컬 `.env`에서 읽습니다. Smithery 설정 화면에는 앱 키, 시크릿, 계좌번호를 입력하지 않습니다.
-
-1. Smithery에서 이 MCP 서버를 설치
-2. 사용자 머신에 `kiwoom_mcp/.env` 파일 생성
-3. [`kiwoom_mcp/.env.example`](kiwoom_mcp/.env.example)을 참고해 `KIWOOM_BASE_URL`, `KIWOOM_APP_KEY`, `KIWOOM_APP_SECRET`, `KIWOOM_ACCOUNT_NO` 을 입력
-4. `KIWOOM_BASE_URL`은 실전/모의투자 환경에 맞게 사용자가 직접 선택
-5. 설치 후 `kiwoom_catalog_search` 또는 `내 예수금 조회해줘` 같은 읽기 요청으로 먼저 검증
-
-주의:
-주문/정정/취소 API는 기본 차단입니다. 실제 실행하려면 `.env`에서 `KIWOOM_ALLOW_TRADE_EXECUTION=true`를 설정하고, 호출 시에도 `approve_trade=true`와 `approval_note`를 함께 제공해야 합니다.
