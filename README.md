@@ -45,23 +45,82 @@
 - `KIWOOM_API_PDF_PATH`: 키움 API PDF 문서 경로 (기본: `docs/키움 REST API 문서.pdf`)
 
 
-## 실행
+## 로컬 설치 및 MCP 등록
+
+### 1. 저장소 클론 및 의존성 설치
+
+```powershell
+git clone https://github.com/eourm20/kiwoom-api-mcp-server.git
+cd kiwoom-api-mcp-server
+
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### 2. 환경변수 설정
+
+```powershell
+Copy-Item kiwoom_mcp\.env.example kiwoom_mcp\.env
+```
+
+`kiwoom_mcp\.env`를 열어 아래 4개 항목을 본인 값으로 변경합니다.
+
+```env
+KIWOOM_BASE_URL=https://api.kiwoom.com        # 실전: https://api.kiwoom.com / 모의: https://mockapi.kiwoom.com
+KIWOOM_APP_KEY=your_app_key                   # 키움 OpenAPI 앱 키
+KIWOOM_APP_SECRET=your_app_secret             # 키움 OpenAPI 앱 시크릿
+KIWOOM_ACCOUNT_NO=your_account_no             # 조회/주문 대상 계좌번호
+```
+
+### 3. Claude Desktop 등록
+
+Claude Desktop 설정 파일(`%APPDATA%\Claude\claude_desktop_config.json`)에 아래 내용을 추가합니다.
+`<프로젝트 경로>`를 실제 클론한 경로로 변경하세요.
+
+```json
+{
+  "mcpServers": {
+    "kiwoom-mcp": {
+      "command": "<프로젝트 경로>\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "kiwoom_mcp.server"],
+      "cwd": "<프로젝트 경로>"
+    }
+  }
+}
+```
+
+예시 (Windows):
+
+```json
+{
+  "mcpServers": {
+    "kiwoom-mcp": {
+      "command": "C:\\Users\\yourname\\mcp-news-trade-coach\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "kiwoom_mcp.server"],
+      "cwd": "C:\\Users\\yourname\\mcp-news-trade-coach"
+    }
+  }
+}
+```
+
+### 4. Claude 재시작
+
+Claude Desktop을 재시작하면 `kiwoom_*` 도구가 활성화됩니다.
+
+---
+
+## 실행 (직접 실행 시)
 
 ```powershell
 # stdio 기본 실행
 python -m kiwoom_mcp.server
 ```
 
-`.env.example`을 복사해 `kiwoom_mcp/.env`를 만들 때, `MCP_TRANSPORT=stdio` 상태를 유지해야 Claude Desktop/Smithery `stdio` 실행과 맞습니다.
-
-```powershell
-Copy-Item kiwoom_mcp/.env.example kiwoom_mcp/.env
-```
-
 ## MCP 사용 방법
 
 1. `kiwoom_mcp/.env`에 개인 키/계좌/문서 경로를 설정
-2. Claude Desktop 설정 파일에 MCP 서버 등록
+2. Claude Desktop 설정 파일에 MCP 서버 등록 (위 **로컬 설치 및 MCP 등록** 참고)
 3. Claude 재시작 후 `kiwoom_*` 도구 호출
 4. 응답이 `needs_input`이면 `required_field_guidance`를 확인해 필수값을 채워 재호출
 
@@ -85,7 +144,7 @@ Smithery에서 이 서버를 설치한 뒤에도, 실제 키움 인증 정보는
 
 1. Smithery에서 이 MCP 서버를 설치
 2. 사용자 머신에 `kiwoom_mcp/.env` 파일 생성
-3. [`kiwoom_mcp/.env.example`](c:\Users\eourm\Desktop\mcp-news-trade-coach\kiwoom_mcp\.env.example)을 참고해 `KIWOOM_BASE_URL`, `KIWOOM_APP_KEY`, `KIWOOM_APP_SECRET`, `KIWOOM_ACCOUNT_NO` 을 입력
+3. [`kiwoom_mcp/.env.example`](kiwoom_mcp/.env.example)을 참고해 `KIWOOM_BASE_URL`, `KIWOOM_APP_KEY`, `KIWOOM_APP_SECRET`, `KIWOOM_ACCOUNT_NO` 을 입력
 4. `KIWOOM_BASE_URL`은 실전/모의투자 환경에 맞게 사용자가 직접 선택
 5. 설치 후 `kiwoom_catalog_search` 또는 `내 예수금 조회해줘` 같은 읽기 요청으로 먼저 검증
 
