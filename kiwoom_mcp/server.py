@@ -203,6 +203,7 @@ def _build_auto_body(
         "end_dt": end_dt,
         "stk_cd": "",
         "qry_tp": "2",
+        "qry_dt": end_dt,
     }
     tp_decision: dict[str, Any] | None = None
     if api_id.lower() in ("kt00015", "ka10075", "ka10076", "ka10077"):
@@ -210,7 +211,13 @@ def _build_auto_body(
         inferred["tp"] = tp_decision["selected"]["value"]
         option_decisions.append(tp_decision)
 
-    for field in required_fields:
+    # Guard against missing required fields from the PDF parser by merging inferred defaults.
+    all_fields = list(required_fields)
+    for fallback_key in inferred:
+        if fallback_key not in [f.lower() for f in all_fields]:
+            all_fields.append(fallback_key)
+
+    for field in all_fields:
         key = field.lower()
         value = env_map.get(key, inferred.get(key, ""))
         if key == "tp" and not value:
