@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -862,6 +864,115 @@ def kiwoom_auto_call(
         "option_selection_summary": _option_selection_summary(option_decisions),
         "execute_result": execute_result,
     }
+
+
+# ── Quant Trading Tools ────────────────────────────────────────────────────
+
+
+def _quant_path() -> Path:
+    """quant_trading 프로젝트 루트 경로 반환."""
+    configured = os.getenv("QUANT_TRADING_PATH", "").strip()
+    if configured:
+        return Path(configured)
+    # 기본값: kiwoom_mcp 폴더가 quant_trading 안에 있다고 가정
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def _quant_python() -> str:
+    """quant_trading 가상환경 python 경로 반환."""
+    root = _quant_path()
+    candidates = [
+        root / ".venv" / "Scripts" / "python.exe",
+        root / ".venv" / "bin" / "python",
+    ]
+    for p in candidates:
+        if p.exists():
+            return str(p)
+    return sys.executable
+
+
+def _run_quant_script(args: list[str]) -> tuple[bool, str]:
+    """quant_trading 스크립트 실행 후 (success, output) 반환."""
+    python = _quant_python()
+    root = _quant_path()
+    try:
+        result = subprocess.run(
+            [python] + args,
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+        )
+        if result.returncode == 0:
+            return True, result.stdout.strip()
+        return False, (result.stderr.strip() or result.stdout.strip())
+    except subprocess.TimeoutExpired:
+        return False, "실행 시간 초과 (30초)"
+    except Exception as e:
+        return False, str(e)
+
+
+@mcp.tool()
+def quant_report(
+    type: str = "all",
+    days: int = 1,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """
+    퀀트 트레이딩 현황 조회.
+    type: signals | portfolio | trades | strategy | all
+    days: 신호 조회 기간 (type=signals 일 때)
+    limit: 조회 건수 (type=trades/strategy 일 때)
+    """
+    valid_types = {"signals", "portfolio", "trades", "strategy", "all"}
+    if type not in valid_types:
+        return {"ok": False, "message": f"type must be one of {valid_types}"}
+
+    args = ["worker/report.py", type]
+    if type == "signals":
+        args += ["--days", str(days)]
+    elif type in ("trades", "strategy"):
+        args += ["--limit", str(limit)]
+
+    ok, output = _run_quant_script(args)
+    return {"ok": ok, "report": output}
+
+
+@mcp.tool()
+def quant_strategy_log(
+    category: str,
+    summary: str,
+    detail: str = "",
+) -> dict[str, Any]:
+    """
+    전략 결정 기록 및 텔레그램 발송.
+    category: trade (매매결정) | watchlist (조건변경) | general (전략메모)
+    summary: 한 줄 요약
+    detail: 상세 이유 (선택)
+    """
+    valid_categories = {"trade", "watchlist", "general"}
+    if category not in valid_categories:
+        return {"ok": False, "message": f"category must be one of {valid_categories}"}
+    if not summary.strip():
+        return {"ok": False, "message": "summary is required"}
+
+    args = ["worker/strategy_log.py", "--category", category, "--summary", summary]
+    if detail:
+        args += ["--detail", detail]
+
+    ok, output = _run_quant_script(args)
+    return {"ok": ok, "message": output}
+
+
+@mcp.tool()
+def quant_portfolio_sync() -> dict[str, Any]:
+    """
+    포트폴리오 및 매매내역을 키움 API에서 조회해 DB에 동기화.
+    매매 실행 후 호출 권장.
+    """
+    ok, output = _run_quant_script(["worker/portfolio_sync.py"])
+    return {"ok": ok, "message": output}
 
 
 if __name__ == "__main__":
