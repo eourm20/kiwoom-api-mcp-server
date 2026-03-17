@@ -895,6 +895,8 @@ def _run_quant_script(args: list[str]) -> tuple[bool, str]:
     """quant_trading 스크립트 실행 후 (success, output) 반환."""
     python = _quant_python()
     root = _quant_path()
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
     try:
         result = subprocess.run(
             [python] + args,
@@ -903,6 +905,7 @@ def _run_quant_script(args: list[str]) -> tuple[bool, str]:
             text=True,
             encoding="utf-8",
             timeout=30,
+            env=env,
         )
         if result.returncode == 0:
             return True, result.stdout.strip()
