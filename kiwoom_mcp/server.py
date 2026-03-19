@@ -950,11 +950,11 @@ def quant_strategy_log(
 ) -> dict[str, Any]:
     """
     전략 결정 기록 및 텔레그램 발송.
-    category: trade (매매결정) | watchlist (조건변경) | general (전략메모)
+    category: trade (매매결정) | watchlist (조건변경) | general (전략메모) | daily_review (하루 총평)
     summary: 한 줄 요약
     detail: 상세 이유 (선택)
     """
-    valid_categories = {"trade", "watchlist", "general"}
+    valid_categories = {"trade", "watchlist", "general", "daily_review"}
     if category not in valid_categories:
         return {"ok": False, "message": f"category must be one of {valid_categories}"}
     if not summary.strip():
