@@ -605,5 +605,28 @@ def quant_strategy_note_delete(
         return {"ok": False, "message": str(e)}
 
 
+@mcp.tool()
+def quant_cooldown_reset(stock_code: str = "", reset_all: bool = False) -> dict[str, Any]:
+    """
+    매매 체결 후 쿨다운 리셋 — 새 포지션 기준으로 신호를 다시 시작.
+    '쿨다운 리셋해줘', '신호 다시 받고 싶어', '매수/매도 후 쿨다운 초기화' 등에 사용.
+
+    - stock_code: 특정 종목 쿨다운만 리셋 (매매 후 자동 호출)
+    - reset_all=True: 전체 종목 쿨다운 리셋 (장 시작 외 수동 초기화)
+    """
+    try:
+        from data.db import reset_cooldowns_for_stock, reset_all_cooldowns
+        if stock_code:
+            count = reset_cooldowns_for_stock(stock_code)
+            return {"ok": True, "message": f"✅ {stock_code} 쿨다운 {count}건 리셋 완료."}
+        elif reset_all:
+            count = reset_all_cooldowns()
+            return {"ok": True, "message": f"✅ 전체 쿨다운 {count}건 리셋 완료."}
+        else:
+            return {"ok": False, "message": "stock_code 또는 reset_all=True 중 하나를 지정하세요."}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")
