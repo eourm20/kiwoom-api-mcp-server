@@ -52,7 +52,7 @@ def _auto_sync_loop(interval_seconds: int = 600):
     while True:
         try:
             if _is_trading_hours():
-                from worker.kiwoom_client import KiwoomClient
+                from worker.clients.kiwoom_client import KiwoomClient
                 from worker.portfolio_sync import sync_all
                 sync_all(KiwoomClient())
                 logger.info("[quant-mcp] 포트폴리오 자동 동기화 완료")
@@ -268,7 +268,7 @@ def quant_strategy_log(category: str, summary: str, detail: str = "") -> dict[st
 def quant_portfolio_sync() -> dict[str, Any]:
     """포트폴리오 및 매매내역을 키움 API에서 조회해 DB에 동기화."""
     try:
-        from worker.kiwoom_client import KiwoomClient
+        from worker.clients.kiwoom_client import KiwoomClient
         from worker.portfolio_sync import sync_all
         kiwoom = KiwoomClient()
         sync_all(kiwoom)
@@ -626,6 +626,139 @@ def quant_cooldown_reset(stock_code: str = "", reset_all: bool = False) -> dict[
             return {"ok": False, "message": "stock_code 또는 reset_all=True 중 하나를 지정하세요."}
     except Exception as e:
         return {"ok": False, "message": str(e)}
+
+
+# ═══════════════════════════ DART 공시 도구 ═══════════════════════════
+
+@mcp.tool()
+def dart_disclosures(
+    stock_code: str, days: int = 30, pblntf_ty: str = "",
+) -> dict[str, Any]:
+    """종목별 DART 공시 목록 조회.
+
+    Args:
+        stock_code: 종목코드 6자리 (예: "005930")
+        days: 조회 기간 (일, 기본 30일)
+        pblntf_ty: 공시유형 필터 (빈값=전체, A=정기, B=주요사항, C=발행, D=지분, E=기타, I=거래소)
+    """
+    try:
+        from kiwoom_mcp.dart_client import search_disclosures
+        from datetime import datetime, timedelta
+        bgn = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+        end = datetime.now().strftime("%Y%m%d")
+        data = search_disclosures(stock_code=stock_code, bgn_de=bgn, end_de=end, pblntf_ty=pblntf_ty)
+        items = data.get("list", [])
+        return {"status": "ok", "count": len(items), "total": data.get("total_count", 0), "disclosures": items[:30]}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@mcp.tool()
+def dart_company_info(stock_code: str) -> dict[str, Any]:
+    """DART 기업개황 조회 (대표자, 업종, 설립일, 홈페이지 등).
+
+    Args:
+        stock_code: 종목코드 6자리
+    """
+    try:
+        from kiwoom_mcp.dart_client import get_company_info
+        return {"status": "ok", "company": get_company_info(stock_code)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@mcp.tool()
+def dart_financial(
+    stock_code: str, year: str = "", report: str = "11011", detail: str = "summary",
+) -> dict[str, Any]:
+    """DART 재무정보 조회.
+
+    Args:
+        stock_code: 종목코드 6자리
+        year: 사업연도 (빈값=전년도)
+        report: 11011=사업보고서, 11012=반기, 11013=1분기, 11014=3분기
+        detail: summary=주요계정, all=전체재무제표, index=재무지표(ROE/PER 등)
+    """
+    try:
+        from kiwoom_mcp.dart_client import get_financial_single, get_financial_all, get_financial_index
+        if detail == "all":
+            return {"status": "ok", "data": get_financial_all(stock_code, year, report)}
+        elif detail == "index":
+            return {"status": "ok", "data": get_financial_index(stock_code, year, report)}
+        else:
+            return {"status": "ok", "data": get_financial_single(stock_code, year, report)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@mcp.tool()
+def dart_shareholders(stock_code: str, type: str = "major") -> dict[str, Any]:
+    """DART 지분공시 조회.
+
+    Args:
+        stock_code: 종목코드 6자리
+        type: major=대량보유(5%+), executive=임원·주요주주 소유
+    """
+    try:
+        from kiwoom_mcp.dart_client import get_major_shareholders, get_executive_shareholders
+        if type == "executive":
+            return {"status": "ok", "data": get_executive_shareholders(stock_code)}
+        else:
+            return {"status": "ok", "data": get_major_shareholders(stock_code)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@mcp.tool()
+def dart_periodic_report(
+    stock_code: str, report_type: str, year: str = "", reprt_code: str = "11011",
+) -> dict[str, Any]:
+    """DART 정기보고서 주요정보 조회 (28종).
+
+    Args:
+        stock_code: 종목코드 6자리
+        report_type: 증자감자/배당/자기주식/최대주주/임원현황/직원현황/회계감사인 등
+        year: 사업연도 (빈값=전년도)
+        reprt_code: 11011=사업보고서, 11012=반기, 11013=1분기, 11014=3분기
+
+    사용 가능한 report_type: 증자감자, 배당, 자기주식, 최대주주, 최대주주변동, 소액주주,
+    임원현황, 직원현황, 이사감사개인별보수, 이사감사전체보수, 개인별보수5억이상,
+    타법인출자, 주식총수, 채무증권발행, 기업어음미상환, 단기사채미상환, 회사채미상환,
+    신종자본증권미상환, 조건부자본증권미상환, 회계감사인, 감사용역, 비감사용역,
+    사외이사, 미등기임원보수, 이사감사전체보수_주총, 이사감사전체보수_유형별,
+    공모자금사용내역, 사모자금사용내역
+    """
+    try:
+        from kiwoom_mcp.dart_client import get_periodic_report
+        return {"status": "ok", "data": get_periodic_report(stock_code, report_type, year, reprt_code)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@mcp.tool()
+def dart_major_event(
+    stock_code: str, event_type: str, bgn_de: str = "", end_de: str = "",
+) -> dict[str, Any]:
+    """DART 주요사항보고서 조회 (36종).
+
+    Args:
+        stock_code: 종목코드 6자리
+        event_type: 유상증자/전환사채발행/회사합병결정/자기주식취득결정 등
+        bgn_de: 시작일 YYYYMMDD (빈값=1년 전)
+        end_de: 종료일 YYYYMMDD (빈값=오늘)
+
+    사용 가능한 event_type: 자산양수도, 부도발생, 영업정지, 회생절차, 해산사유,
+    유상증자, 무상증자, 유무상증자, 감자, 채권은행관리절차개시, 소송제기,
+    해외상장결정, 해외상장폐지결정, 전환사채발행, 신주인수권부사채발행, 교환사채발행,
+    자기주식취득결정, 자기주식처분결정, 영업양수결정, 영업양도결정,
+    유형자산양수, 유형자산양도, 타법인주식양수, 타법인주식양도,
+    회사합병결정, 회사분할결정, 회사분할합병결정, 주식교환이전결정
+    """
+    try:
+        from kiwoom_mcp.dart_client import get_major_event
+        return {"status": "ok", "data": get_major_event(stock_code, event_type, bgn_de, end_de)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 if __name__ == "__main__":
