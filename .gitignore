@@ -8,3 +8,4 @@
 .vscode/
 .pytest_cache/
 scripts/
+kiwoom_mcp/.dart_cache/
