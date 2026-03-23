@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
-import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,24 @@ def _load_env_files() -> None:
 
 
 _load_env_files()
+
+logger = logging.getLogger(__name__)
+
+# quant_trading 루트를 sys.path에 추가
+_module_dir = Path(__file__).resolve().parent
+_quant_root = Path(os.getenv("QUANT_TRADING_PATH", "")).resolve() if os.getenv("QUANT_TRADING_PATH") else _module_dir.parent.parent
+if str(_quant_root) not in sys.path:
+    sys.path.insert(0, str(_quant_root))
+
+# quant_trading .env 로드
+load_dotenv(_quant_root / ".env", override=False)
+
+# DB 초기화 (테이블 없으면 생성, 이미 있으면 무시)
+try:
+    from data.db import init_db
+    init_db()
+except Exception as e:
+    logger.warning(f"[kiwoom-mcp] DB 초기화 실패 (quant 도구 사용 불가): {e}")
 
 
 def _env(name: str, default: str | None = None) -> str:
@@ -866,116 +886,596 @@ def kiwoom_auto_call(
     }
 
 
-# ── Quant Trading Tools ────────────────────────────────────────────────────
+# ── Quant Trading Tools (직접 함수 호출 방식) ──────────────────────────────
 
 
-def _quant_path() -> Path:
-    """quant_trading 프로젝트 루트 경로 반환."""
-    configured = os.getenv("QUANT_TRADING_PATH", "").strip()
-    if configured:
-        return Path(configured)
-    # 기본값: kiwoom_mcp 폴더가 quant_trading 안에 있다고 가정
-    return Path(__file__).resolve().parent.parent.parent
+def _is_trading_hours() -> bool:
+    """평일 08:00~16:00 (프리장 포함)"""
+    now = datetime.now()
+    return now.weekday() < 5 and 8 <= now.hour < 16
 
 
-def _quant_python() -> str:
-    """quant_trading 가상환경 python 경로 반환."""
-    root = _quant_path()
-    candidates = [
-        root / ".venv" / "Scripts" / "python.exe",
-        root / ".venv" / "bin" / "python",
-    ]
-    for p in candidates:
-        if p.exists():
-            return str(p)
-    return sys.executable
+def _auto_sync_loop(interval_seconds: int = 600):
+    """Claude Desktop 실행 중 장 시간대 포트폴리오 자동 동기화 (백그라운드 스레드)."""
+    time.sleep(30)
+    while True:
+        try:
+            if _is_trading_hours():
+                from worker.clients.kiwoom_client import KiwoomClient
+                from worker.portfolio_sync import sync_all
+                sync_all(KiwoomClient())
+                logger.info("[kiwoom-mcp] 포트폴리오 자동 동기화 완료")
+        except Exception as e:
+            logger.warning(f"[kiwoom-mcp] 자동 동기화 실패: {e}")
+        time.sleep(interval_seconds)
 
 
-def _run_quant_script(args: list[str]) -> tuple[bool, str]:
-    """quant_trading 스크립트 실행 후 (success, output) 반환."""
-    python = _quant_python()
-    root = _quant_path()
-    env = os.environ.copy()
-    env["PYTHONIOENCODING"] = "utf-8"
-    try:
-        result = subprocess.run(
-            [python] + args,
-            cwd=str(root),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=30,
-            env=env,
+_sync_thread = threading.Thread(target=_auto_sync_loop, daemon=True, name="quant-auto-sync")
+_sync_thread.start()
+
+
+_CATEGORY_LABEL = {"trade": "매매 결정", "watchlist": "조건 변경", "general": "전략 메모"}
+_ACTION_EMOJI = {
+    "매매 결정": "💼", "조건 변경": "⚙️", "전략 메모": "📋",
+    "전략 삭제": "🗑", "전략 추가": "📋",
+}
+
+_notify_buffer: list[tuple[str, str, str]] = []
+_notify_timer: threading.Timer | None = None
+_notify_lock = threading.Lock()
+_NOTIFY_DELAY = 4.0
+
+
+def _flush_notify_buffer() -> None:
+    global _notify_buffer
+    with _notify_lock:
+        items = _notify_buffer[:]
+        _notify_buffer = []
+    if not items:
+        return
+
+    def _fmt(action: str, summary: str, ts: str, extra: str = "") -> str:
+        emoji = _ACTION_EMOJI.get(action, "📌")
+        escaped = _md_escape(summary)
+        tail = f" (외 {extra}건)" if extra else ""
+        return f"{emoji} *[{action}]*{tail}\n{escaped}"
+
+    if len(items) == 1:
+        action, summary, ts = items[0]
+        _telegram_send(_fmt(action, summary, ts))
+        return
+
+    from collections import Counter
+    action_counts: Counter = Counter(action for action, _, __ in items)
+    action_first: dict[str, tuple[str, str]] = {}
+    for action, summary, ts in items:
+        if action not in action_first:
+            action_first[action] = (summary, ts)
+
+    lines = []
+    for action, count in action_counts.items():
+        summary, ts = action_first[action]
+        extra = str(count - 1) if count > 1 else ""
+        lines.append(_fmt(action, summary, ts, extra))
+    _telegram_send("\n\n".join(lines))
+
+
+_TG_MAX_LEN = 4000
+
+
+def _md_escape(text: str) -> str:
+    for ch in ("_", "*", "`", "["):
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
+def _telegram_send(text: str) -> bool:
+    import httpx
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    if not token or not chat_id:
+        logger.warning("[kiwoom-mcp] TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 미설정")
+        return False
+
+    if len(text) > _TG_MAX_LEN:
+        text = text[:_TG_MAX_LEN] + "\n...(이하 생략)"
+
+    def _post(parse_mode):
+        payload = {"chat_id": chat_id, "text": text}
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        return httpx.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json=payload,
+            timeout=10,
         )
-        if result.returncode == 0:
-            return True, result.stdout.strip()
-        return False, (result.stderr.strip() or result.stdout.strip())
-    except subprocess.TimeoutExpired:
-        return False, "실행 시간 초과 (30초)"
+
+    try:
+        resp = _post("Markdown")
+        if resp.status_code == 200:
+            return True
+        logger.warning(f"[kiwoom-mcp] Markdown 발송 실패({resp.status_code}), plain text 재시도")
+        resp2 = _post(None)
+        ok = resp2.status_code == 200
+        if not ok:
+            logger.warning(f"[kiwoom-mcp] plain text 발송도 실패: {resp2.status_code} {resp2.text[:200]}")
+        return ok
     except Exception as e:
-        return False, str(e)
+        logger.warning(f"[kiwoom-mcp] 텔레그램 발송 실패: {e}")
+        return False
+
+
+def _notify(action: str, summary: str, detail: str = "", ts: str = "") -> bool:
+    global _notify_timer
+    if not ts:
+        ts = datetime.now().strftime("%Y.%m.%d %H:%M:%S")
+    else:
+        ts = ts[:19].replace("-", ".")
+    with _notify_lock:
+        _notify_buffer.append((action, summary, ts))
+        if _notify_timer is not None:
+            _notify_timer.cancel()
+        _notify_timer = threading.Timer(_NOTIFY_DELAY, _flush_notify_buffer)
+        _notify_timer.daemon = True
+        _notify_timer.start()
+    return True
+
+
+def _log_and_notify(category: str, summary: str, detail: str = "") -> bool:
+    created_at = ""
+    display_summary = summary
+    try:
+        from data.db import save_strategy_note, get_strategy_notes
+        save_strategy_note(category, summary, detail)
+        notes = get_strategy_notes(limit=1)
+        if notes:
+            created_at = notes[0].get("created_at", "")
+            note_id = notes[0].get("id", "")
+            if note_id:
+                display_summary = f"[ID:{note_id}] {summary}"
+    except Exception as e:
+        logger.warning(f"[kiwoom-mcp] strategy_note 저장 실패: {e}")
+
+    label = _CATEGORY_LABEL.get(category, category)
+    return _notify(label, display_summary, detail, ts=created_at)
+
+
+def _get_report_fns():
+    from worker.report import (
+        report_signals, report_portfolio,
+        report_trades, report_strategy, report_all,
+    )
+    return {
+        "signals": report_signals,
+        "portfolio": report_portfolio,
+        "trades": report_trades,
+        "strategy": report_strategy,
+        "all": report_all,
+    }
 
 
 @mcp.tool()
-def quant_report(
-    type: str = "all",
-    days: int = 1,
-    limit: int = 20,
-) -> dict[str, Any]:
+def quant_report(type: str = "all", days: int = 1, limit: int = 20) -> dict[str, Any]:
     """
     퀀트 트레이딩 현황 조회.
     type: signals | portfolio | trades | strategy | all
     days: 신호 조회 기간 (type=signals 일 때)
     limit: 조회 건수 (type=trades/strategy 일 때)
     """
-    valid_types = {"signals", "portfolio", "trades", "strategy", "all"}
-    if type not in valid_types:
-        return {"ok": False, "message": f"type must be one of {valid_types}"}
-
-    args = ["worker/report.py", type]
-    if type == "signals":
-        args += ["--days", str(days)]
-    elif type in ("trades", "strategy"):
-        args += ["--limit", str(limit)]
-
-    ok, output = _run_quant_script(args)
-    return {"ok": ok, "report": output}
+    valid = {"signals", "portfolio", "trades", "strategy", "all"}
+    if type not in valid:
+        return {"ok": False, "message": f"type must be one of {valid}"}
+    try:
+        fns = _get_report_fns()
+        fn = fns[type]
+        if type == "signals":
+            output = fn(days=days)
+        elif type in ("trades", "strategy"):
+            output = fn(limit=limit)
+        else:
+            output = fn()
+        return {"ok": True, "report": output}
+    except Exception as e:
+        return {"ok": False, "report": str(e)}
 
 
 @mcp.tool()
-def quant_strategy_log(
-    category: str,
-    summary: str,
-    detail: str = "",
-) -> dict[str, Any]:
+def quant_strategy_log(category: str, summary: str, detail: str = "") -> dict[str, Any]:
     """
     전략 결정 기록 및 텔레그램 발송.
-    category: trade (매매결정) | watchlist (조건변경) | general (전략메모) | daily_review (하루 총평)
-    summary: 한 줄 요약
-    detail: 상세 이유 (선택)
+    category: trade (매매결정) | watchlist (조건변경) | general (전략메모)
     """
-    valid_categories = {"trade", "watchlist", "general", "daily_review"}
-    if category not in valid_categories:
-        return {"ok": False, "message": f"category must be one of {valid_categories}"}
+    if category not in {"trade", "watchlist", "general"}:
+        return {"ok": False, "message": "category must be trade | watchlist | general"}
     if not summary.strip():
         return {"ok": False, "message": "summary is required"}
-
-    args = ["worker/strategy_log.py", "--category", category, "--summary", summary]
-    if detail:
-        args += ["--detail", detail]
-
-    ok, output = _run_quant_script(args)
-    return {"ok": ok, "message": output}
+    ok = _log_and_notify(category, summary, detail)
+    return {"ok": ok, "message": "✅ 전송 완료" if ok else "❌ 전송 실패"}
 
 
 @mcp.tool()
 def quant_portfolio_sync() -> dict[str, Any]:
+    """포트폴리오 및 매매내역을 키움 API에서 조회해 DB에 동기화."""
+    try:
+        from worker.clients.kiwoom_client import KiwoomClient
+        from worker.portfolio_sync import sync_all
+        kiwoom = KiwoomClient()
+        sync_all(kiwoom)
+        return {"ok": True, "message": "✅ 포트폴리오 동기화 완료"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@mcp.tool()
+def quant_watchlist_read() -> dict[str, Any]:
     """
-    포트폴리오 및 매매내역을 키움 API에서 조회해 DB에 동기화.
-    매매 실행 후 호출 권장.
+    모니터링 종목 및 조건 전체 조회 (DB).
+    각 종목에 in_portfolio(보유 여부) 필드가 포함되어 보유/미보유 구분 가능.
     """
-    ok, output = _run_quant_script(["worker/portfolio_sync.py"])
-    return {"ok": ok, "message": output}
+    try:
+        from data.db import get_watchlist, get_portfolio
+        watchlist = get_watchlist()
+        holding_codes = {h["stock_code"] for h in get_portfolio()}
+        for stock in watchlist:
+            stock["in_portfolio"] = stock["code"] in holding_codes
+        return {"ok": True, "watchlist": watchlist}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@mcp.tool()
+def quant_watchlist_update(stock_code: str, field: str, value: str) -> dict[str, Any]:
+    """
+    종목 조건 수정 (DB 즉시 반영).
+    stock_code: 종목코드 (예: '012450')
+    field: 수정할 필드 (예: 'target_price', 'stop_loss_price', 'rsi_overbought', 'enabled' 등)
+    value: 새 값 (숫자 문자열 자동 변환)
+    """
+    try:
+        from data.db import get_watchlist, update_stock_field
+        stocks = {s["code"]: s for s in get_watchlist()}
+        if stock_code not in stocks:
+            return {"ok": False, "message": f"종목코드 {stock_code} 없음. 등록된 코드: {list(stocks.keys())}"}
+
+        target = stocks[stock_code]
+        old_value = target.get(field) or target.get("conditions", {}).get(field)
+
+        if value.lower() in ("true", "false"):
+            new_value = value.lower() == "true"
+        else:
+            try:
+                new_value = int(float(value)) if "." not in value else float(value)
+            except ValueError:
+                new_value = value
+
+        update_stock_field(stock_code, field, new_value)
+        return {"ok": True, "message": f"✅ {target['name']} {field}: {old_value} → {new_value}"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@mcp.tool()
+def quant_watchlist_add(code: str, name: str, conditions: str = "{}") -> dict[str, Any]:
+    """
+    모니터링 종목 추가 (DB).
+    conditions: JSON 문자열 (예: '{"target_price": 100000, "rsi_overbought": 70}')
+    """
+    try:
+        import json as _json
+        from data.db import upsert_stock
+        cond_dict = _json.loads(conditions) if conditions else {}
+        upsert_stock(str(code), name, True, cond_dict)
+        return {"ok": True, "message": f"✅ {name} ({code}) 모니터링 추가 완료."}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@mcp.tool()
+def quant_watchlist_delete(stock_code: str) -> dict[str, Any]:
+    """모니터링 종목 삭제 (DB)."""
+    try:
+        from data.db import delete_stock, get_watchlist
+        stocks = {s["code"]: s for s in get_watchlist()}
+        if stock_code not in stocks:
+            return {"ok": False, "message": f"종목코드 {stock_code} 없음."}
+        name = stocks[stock_code]["name"]
+        delete_stock(stock_code)
+        return {"ok": True, "message": f"✅ {name} ({stock_code}) 모니터링 삭제 완료."}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@mcp.tool()
+def quant_conditions_list() -> dict[str, Any]:
+    """시그널 조건 타입 전체 목록 조회 (DB)."""
+    try:
+        from data.db import get_conditions
+        return {"ok": True, "conditions": get_conditions()}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@mcp.tool()
+def quant_condition_add(
+    id: str, name: str, evaluator: str, param: str,
+    cooldown_minutes: int, message: str,
+    chart_field: str = "", description: str = "", signal_type: str = "both",
+) -> dict[str, Any]:
+    """
+    새 시그널 조건 타입 추가 (DB).
+    evaluator: price_gte / price_lte / rsi_gte / rsi_lte / volume_gte / flag
+    signal_type: entry / exit / both
+    """
+    valid_evaluators = {"price_gte", "price_lte", "rsi_gte", "rsi_lte", "volume_gte", "flag"}
+    if evaluator not in valid_evaluators:
+        return {"ok": False, "message": f"evaluator는 {valid_evaluators} 중 하나여야 합니다."}
+    if evaluator == "flag" and not chart_field:
+        return {"ok": False, "message": "flag evaluator는 chart_field가 필수입니다."}
+    if signal_type not in {"entry", "exit", "both"}:
+        return {"ok": False, "message": "signal_type은 entry / exit / both 중 하나여야 합니다."}
+    try:
+        from data.db import add_condition, get_conditions
+        if any(c["id"] == id for c in get_conditions()):
+            return {"ok": False, "message": f"조건 ID '{id}'가 이미 존재합니다."}
+        ok = add_condition({
+            "id": id, "name": name, "evaluator": evaluator, "param": param,
+            "cooldown_minutes": cooldown_minutes, "message": message,
+            "chart_field": chart_field or None, "description": description,
+            "signal_type": signal_type,
+        })
+        if ok:
+            _log_and_notify("general", f"시그널 조건 추가: {name}", f"id={id}, evaluator={evaluator}, param={param}")
+            return {"ok": True, "message": f"✅ 조건 '{name}' 추가 완료."}
+        return {"ok": False, "message": "추가 실패 (중복 ID 가능성)"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@mcp.tool()
+def quant_condition_update(
+    id: str, name: str = "", cooldown_minutes: int = 0,
+    message: str = "", description: str = "",
+    signal_type: str = "", chart_field: str = "",
+) -> dict[str, Any]:
+    """
+    기존 시그널 조건 수정 (conditions_def 테이블).
+    id: 수정할 조건 ID (필수). 나머지: 변경할 항목만 입력.
+    """
+    fields = {}
+    if name:
+        fields["name"] = name
+    if cooldown_minutes > 0:
+        fields["cooldown_minutes"] = cooldown_minutes
+    if message:
+        fields["message"] = message
+    if description:
+        fields["description"] = description
+    if signal_type:
+        if signal_type not in {"entry", "exit", "both", "add"}:
+            return {"ok": False, "message": "signal_type은 entry / exit / both / add 중 하나여야 합니다."}
+        fields["signal_type"] = signal_type
+    if chart_field:
+        fields["chart_field"] = chart_field
+    if not fields:
+        return {"ok": False, "message": "변경할 항목을 하나 이상 입력해 주세요."}
+    try:
+        from data.db import update_condition, get_conditions
+        target = next((c for c in get_conditions() if c["id"] == id), None)
+        if not target:
+            return {"ok": False, "message": f"조건 ID '{id}' 없음."}
+        ok = update_condition(id, fields)
+        if ok:
+            changed = ", ".join(f"{k}={v}" for k, v in fields.items())
+            _log_and_notify("general", f"시그널 조건 수정: {target['name']}", f"id={id}, {changed}")
+            return {"ok": True, "message": f"✅ 조건 '{target['name']}' 수정 완료.", "updated": fields}
+        return {"ok": False, "message": "수정 실패"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@mcp.tool()
+def quant_condition_remove(id: str) -> dict[str, Any]:
+    """시그널 조건 타입 삭제 (DB)."""
+    try:
+        from data.db import remove_condition, get_conditions
+        target = next((c for c in get_conditions() if c["id"] == id), None)
+        if not target:
+            return {"ok": False, "message": f"조건 ID '{id}' 없음."}
+        remove_condition(id)
+        _log_and_notify("general", f"시그널 조건 삭제: {target['name']}", f"id={id}")
+        return {"ok": True, "message": f"✅ 조건 '{target['name']}' 삭제 완료."}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@mcp.tool()
+def quant_signal_log_delete(
+    signal_id: int = 0, stock_code: str = "",
+    before_date: str = "", delete_all: bool = False,
+) -> dict[str, Any]:
+    """
+    신호 로그 삭제 (signals 테이블). conditions_def(조건 정의) 삭제와 무관.
+    삭제 방식: signal_id / stock_code / before_date / delete_all 중 하나 지정.
+    """
+    try:
+        from data.db import delete_signal, delete_signals_by_stock, delete_signals_before, delete_all_signals
+        if signal_id:
+            ok = delete_signal(signal_id)
+            return {"ok": ok, "message": f"✅ 신호 ID {signal_id} 삭제 완료." if ok else f"❌ ID {signal_id} 없음."}
+        elif stock_code:
+            count = delete_signals_by_stock(stock_code)
+            return {"ok": True, "message": f"✅ {stock_code} 신호 {count}건 삭제 완료."}
+        elif before_date:
+            count = delete_signals_before(before_date)
+            return {"ok": True, "message": f"✅ {before_date} 이전 신호 {count}건 삭제 완료."}
+        elif delete_all:
+            count = delete_all_signals()
+            return {"ok": True, "message": f"✅ 신호 로그 전체 {count}건 삭제 완료."}
+        else:
+            return {"ok": False, "message": "삭제 조건을 하나 이상 지정하세요."}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@mcp.tool()
+def quant_strategy_note_update(
+    note_id: int, summary: str = "", detail: str = "", category: str = "",
+) -> dict[str, Any]:
+    """
+    전략 노트 수정 (strategy_notes 테이블).
+    note_id: 수정할 노트 ID (필수). 나머지: 변경할 항목만 입력.
+    """
+    if not any([summary, detail, category]):
+        return {"ok": False, "message": "변경할 항목을 하나 이상 입력해 주세요."}
+    try:
+        from data.db import update_strategy_note, get_strategy_note
+        note = get_strategy_note(note_id)
+        if not note:
+            return {"ok": False, "message": f"전략 노트 ID {note_id} 없음."}
+        ok = update_strategy_note(note_id, summary=summary, detail=detail, category=category)
+        if ok:
+            display = summary or note.get("summary", "")
+            _notify("전략 수정", f"[ID:{note_id}] {display}", ts=note.get("created_at", ""))
+            return {"ok": True, "message": f"✅ 전략 노트 ID {note_id} 수정 완료."}
+        return {"ok": False, "message": "수정 실패"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@mcp.tool()
+def quant_strategy_note_delete(note_id: int = 0, delete_all: bool = False) -> dict[str, Any]:
+    """
+    전략 노트 삭제 (strategy_notes 테이블).
+    삭제 방식: note_id / delete_all 중 하나 지정.
+    """
+    try:
+        from data.db import (
+            get_strategy_note, get_strategy_notes,
+            delete_strategy_note, delete_all_strategy_notes,
+        )
+        if note_id:
+            note = get_strategy_note(note_id)
+            ok = delete_strategy_note(note_id)
+            if ok and note:
+                _notify("전략 삭제", f"[ID:{note_id}] {note.get('summary', '')}", ts=note.get("created_at", ""))
+            return {"ok": ok, "message": f"✅ 전략 노트 ID {note_id} 삭제 완료." if ok else f"❌ ID {note_id} 없음."}
+        elif delete_all:
+            notes = get_strategy_notes(limit=10000)
+            count = delete_all_strategy_notes()
+            for note in notes:
+                nid = note.get("id", "")
+                _notify("전략 삭제", f"[ID:{nid}] {note.get('summary', '')}", ts=note.get("created_at", ""))
+            return {"ok": True, "message": f"✅ 전략 노트 전체 {count}건 삭제 완료."}
+        else:
+            return {"ok": False, "message": "삭제 조건을 지정하세요 (note_id / delete_all)."}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@mcp.tool()
+def quant_cooldown_reset(stock_code: str = "", reset_all: bool = False) -> dict[str, Any]:
+    """
+    매매 체결 후 쿨다운 리셋.
+    stock_code: 특정 종목 쿨다운만 리셋 / reset_all=True: 전체 리셋
+    """
+    try:
+        from data.db import reset_cooldowns_for_stock, reset_all_cooldowns
+        if stock_code:
+            count = reset_cooldowns_for_stock(stock_code)
+            return {"ok": True, "message": f"✅ {stock_code} 쿨다운 {count}건 리셋 완료."}
+        elif reset_all:
+            count = reset_all_cooldowns()
+            return {"ok": True, "message": f"✅ 전체 쿨다운 {count}건 리셋 완료."}
+        else:
+            return {"ok": False, "message": "stock_code 또는 reset_all=True 중 하나를 지정하세요."}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+# ═══════════════════════════ DART 공시 도구 ═══════════════════════════
+
+@mcp.tool()
+def dart_disclosures(
+    stock_code: str, days: int = 30, pblntf_ty: str = "",
+) -> dict[str, Any]:
+    """종목별 DART 공시 목록 조회.
+    stock_code: 종목코드 6자리, days: 조회 기간, pblntf_ty: 공시유형 필터
+    """
+    try:
+        from kiwoom_mcp.dart_client import search_disclosures
+        bgn = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+        end = datetime.now().strftime("%Y%m%d")
+        data = search_disclosures(stock_code=stock_code, bgn_de=bgn, end_de=end, pblntf_ty=pblntf_ty)
+        items = data.get("list", [])
+        return {"status": "ok", "count": len(items), "total": data.get("total_count", 0), "disclosures": items[:30]}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@mcp.tool()
+def dart_company_info(stock_code: str) -> dict[str, Any]:
+    """DART 기업개황 조회 (대표자, 업종, 설립일, 홈페이지 등)."""
+    try:
+        from kiwoom_mcp.dart_client import get_company_info
+        return {"status": "ok", "company": get_company_info(stock_code)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@mcp.tool()
+def dart_financial(
+    stock_code: str, year: str = "", report: str = "11011", detail: str = "summary",
+) -> dict[str, Any]:
+    """DART 재무정보 조회.
+    detail: summary=주요계정, all=전체재무제표, index=재무지표(ROE/PER 등)
+    """
+    try:
+        from kiwoom_mcp.dart_client import get_financial_single, get_financial_all, get_financial_index
+        if detail == "all":
+            return {"status": "ok", "data": get_financial_all(stock_code, year, report)}
+        elif detail == "index":
+            return {"status": "ok", "data": get_financial_index(stock_code, year, report)}
+        else:
+            return {"status": "ok", "data": get_financial_single(stock_code, year, report)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@mcp.tool()
+def dart_shareholders(stock_code: str, type: str = "major") -> dict[str, Any]:
+    """DART 지분공시 조회. type: major=대량보유(5%+), executive=임원·주요주주"""
+    try:
+        from kiwoom_mcp.dart_client import get_major_shareholders, get_executive_shareholders
+        if type == "executive":
+            return {"status": "ok", "data": get_executive_shareholders(stock_code)}
+        else:
+            return {"status": "ok", "data": get_major_shareholders(stock_code)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@mcp.tool()
+def dart_periodic_report(
+    stock_code: str, report_type: str, year: str = "", reprt_code: str = "11011",
+) -> dict[str, Any]:
+    """DART 정기보고서 주요정보 조회 (28종)."""
+    try:
+        from kiwoom_mcp.dart_client import get_periodic_report
+        return {"status": "ok", "data": get_periodic_report(stock_code, report_type, year, reprt_code)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@mcp.tool()
+def dart_major_event(
+    stock_code: str, event_type: str, bgn_de: str = "", end_de: str = "",
+) -> dict[str, Any]:
+    """DART 주요사항보고서 조회 (36종)."""
+    try:
+        from kiwoom_mcp.dart_client import get_major_event
+        return {"status": "ok", "data": get_major_event(stock_code, event_type, bgn_de, end_de)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 if __name__ == "__main__":
