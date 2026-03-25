@@ -1113,11 +1113,14 @@ def quant_watchlist_read() -> dict[str, Any]:
     각 종목에 in_portfolio(보유 여부) 필드가 포함되어 보유/미보유 구분 가능.
     """
     try:
-        from data.db import get_watchlist, get_portfolio
+        from data.db import get_watchlist, get_portfolio, get_positions
         watchlist = get_watchlist()
         holding_codes = {h["stock_code"] for h in get_portfolio()}
+        positions_map = {p["stock_code"]: p for p in get_positions()}
         for stock in watchlist:
             stock["in_portfolio"] = stock["code"] in holding_codes
+            if stock["code"] in positions_map:
+                stock["position"] = positions_map[stock["code"]]
         return {"ok": True, "watchlist": watchlist}
     except Exception as e:
         return {"ok": False, "message": str(e)}
@@ -1132,13 +1135,12 @@ def quant_watchlist_update(stock_code: str, field: str, value: str) -> dict[str,
     value: 새 값 (숫자 문자열 자동 변환)
     """
     try:
-        from data.db import get_watchlist, update_stock_field
+        from data.db import get_watchlist, update_stock_field, get_position, update_position_field
         stocks = {s["code"]: s for s in get_watchlist()}
         if stock_code not in stocks:
             return {"ok": False, "message": f"종목코드 {stock_code} 없음. 등록된 코드: {list(stocks.keys())}"}
 
         target = stocks[stock_code]
-        old_value = target.get(field) or target.get("conditions", {}).get(field)
 
         if value.lower() in ("true", "false"):
             new_value = value.lower() == "true"
@@ -1148,6 +1150,19 @@ def quant_watchlist_update(stock_code: str, field: str, value: str) -> dict[str,
             except ValueError:
                 new_value = value
 
+        # 포지션 전용 필드는 positions 테이블로 라우팅
+        position_fields = {"target_price", "stop_loss_price", "add_buy_price", "mid_sell_price",
+                           "rsi_oversold_add", "bollinger_lower_break_add", "ma5_recovery_add"}
+        if field in position_fields:
+            pos = get_position(stock_code)
+            if pos:
+                old_value = pos.get(field)
+                update_position_field(stock_code, field, new_value)
+                return {"ok": True, "message": f"✅ {target['name']} 포지션 {field}: {old_value} → {new_value}"}
+            else:
+                return {"ok": False, "message": f"포지션 없음: {stock_code} (미보유 종목). 매수 후 포지션이 자동 생성됩니다."}
+
+        old_value = target.get(field) or target.get("conditions", {}).get(field)
         update_stock_field(stock_code, field, new_value)
         return {"ok": True, "message": f"✅ {target['name']} {field}: {old_value} → {new_value}"}
     except Exception as e:
@@ -1181,6 +1196,53 @@ def quant_watchlist_delete(stock_code: str) -> dict[str, Any]:
         name = stocks[stock_code]["name"]
         delete_stock(stock_code)
         return {"ok": True, "message": f"✅ {name} ({stock_code}) 모니터링 삭제 완료."}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@mcp.tool()
+def quant_positions_read() -> dict[str, Any]:
+    """
+    보유 종목 포지션 관리 정보 조회 (목표가/손절가/추가매수가/중간매도가).
+    매수 후 확정된 포지션 관리 파라미터를 조회합니다.
+    """
+    try:
+        from data.db import get_positions
+        return {"ok": True, "positions": get_positions()}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@mcp.tool()
+def quant_position_update(stock_code: str, field: str, value: str) -> dict[str, Any]:
+    """
+    보유 종목 포지션 필드 수정 (DB 즉시 반영).
+    stock_code: 종목코드 (예: '012450')
+    field: 수정할 필드 (target_price, stop_loss_price, add_buy_price, mid_sell_price, rsi_oversold_add 등)
+    value: 새 값 (숫자 문자열 자동 변환)
+    """
+    try:
+        from data.db import get_position, update_position_field
+        pos = get_position(stock_code)
+        if not pos:
+            return {"ok": False, "message": f"포지션 없음: {stock_code} (미보유 종목이거나 포지션 미생성)"}
+
+        old_value = pos.get(field)
+
+        if value.lower() in ("true", "false"):
+            new_value = value.lower() == "true"
+        elif value.lower() in ("none", "null", ""):
+            new_value = None
+        else:
+            try:
+                new_value = int(float(value)) if "." not in value else float(value)
+            except ValueError:
+                new_value = value
+
+        ok = update_position_field(stock_code, field, new_value)
+        if not ok:
+            return {"ok": False, "message": f"필드 '{field}'은 수정 불가 (허용: target_price, stop_loss_price, add_buy_price, mid_sell_price, rsi_oversold_add, bollinger_lower_break_add, ma5_recovery_add, strategy_note)"}
+        return {"ok": True, "message": f"✅ {pos['stock_name']} {field}: {old_value} → {new_value}"}
     except Exception as e:
         return {"ok": False, "message": str(e)}
 
