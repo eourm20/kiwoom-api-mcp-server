@@ -1162,7 +1162,7 @@ def quant_watchlist_update(stock_code: str, field: str, value: str) -> dict[str,
             else:
                 return {"ok": False, "message": f"포지션 없음: {stock_code} (미보유 종목). 매수 후 포지션이 자동 생성됩니다."}
 
-        old_value = target.get(field) or target.get("conditions", {}).get(field)
+        old_value = target.get(field)
         update_stock_field(stock_code, field, new_value)
         return {"ok": True, "message": f"✅ {target['name']} {field}: {old_value} → {new_value}"}
     except Exception as e:
