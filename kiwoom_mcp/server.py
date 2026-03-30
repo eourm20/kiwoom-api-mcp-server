@@ -514,6 +514,39 @@ def kiwoom_execute_api(
             next_key=next_key,
             max_pages=max_pages,
         )
+
+        # 모의투자 매수/매도 체결 → trades 테이블에 직접 기록
+        if api_id in ("kt10000", "kt10001") and "mockapi" in os.getenv("KIWOOM_BASE_URL", ""):
+            try:
+                from data.db import insert_trade_direct, get_watchlist, get_portfolio
+                payload = (result.get("pages") or [{}])[0].get("payload", {})
+                ord_no = str(payload.get("ord_no") or "")
+                b = body or {}
+                stock_code = str(b.get("stk_cd") or "").replace("A", "").strip()
+                quantity = int(b.get("ord_qty") or 0)
+                price = int(b.get("ord_uv") or 0)
+                side = "매수" if api_id == "kt10000" else "매도"
+                # 종목명: watchlist → portfolio → stock_code 순으로 조회
+                stock_name = stock_code
+                try:
+                    wl = {s["code"]: s["name"] for s in (get_watchlist() or [])}
+                    pf = {s["stock_code"]: s["stock_name"] for s in (get_portfolio() or [])}
+                    stock_name = wl.get(stock_code) or pf.get(stock_code) or stock_code
+                except Exception:
+                    pass
+                if ord_no and stock_code and quantity:
+                    insert_trade_direct(
+                        trade_id=ord_no,
+                        stock_code=stock_code,
+                        stock_name=stock_name,
+                        side=side,
+                        quantity=quantity,
+                        price=price,
+                    )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"[mcp] 모의투자 체결 DB 저장 실패: {e}")
+
         return {"ok": True, **result}
     finally:
         client.close()
